@@ -1,7 +1,6 @@
 // client/src/webrtc.js
-export function createPeerConnection({ isInitiator, onData, onStateChange, sendSignal, iceServers = [{ urls: 'stun:stun.l.google.com:19302' }] }) {
-  const pc = new RTCPeerConnection({ iceServers });
-
+export function createPeerConnection({ isInitiator, onData, onStateChange, sendSignal, iceServers }) {
+  const pc = new RTCPeerConnection({ iceServers: iceServers || [{ urls: 'stun:stun.l.google.com:19302' }] });
   let dc = null;
 
   function setupDC(channel) {
@@ -19,10 +18,7 @@ export function createPeerConnection({ isInitiator, onData, onStateChange, sendS
   }
 
   pc.onicecandidate = (ev) => {
-    if (ev.candidate) {
-      // send ICE candidate object to peer
-      sendSignal({ type: 'ice', candidate: ev.candidate });
-    }
+    if (ev.candidate) sendSignal({ type: 'ice', candidate: ev.candidate });
   };
 
   async function createOffer() {

@@ -11,13 +11,13 @@ export default function App() {
 
   const socketRef = useRef(null);
   const pcRef = useRef(null);
-  const peerIdRef = useRef(null); // keep stable ref for signal handler
+  const peerIdRef = useRef(null);
 
   useEffect(() => {
-    const socket = io(SIGNALING_SERVER);
+    const socket = io(SIGNALING_SERVER, { transports: ['websocket', 'polling'] });
     socketRef.current = socket;
 
-    socket.on('connect', () => addLog('connected to signaling'));
+    socket.on('connect', () => addLog('connected to signaling: ' + socket.id));
     socket.on('queued', () => { addLog('queued, waiting...'); setStatus('queued'); });
     socket.on('matched', ({ sessionId, peerSocketId }) => {
       addLog('matched with ' + peerSocketId);
@@ -25,26 +25,19 @@ export default function App() {
       setPeerId(peerSocketId);
       peerIdRef.current = peerSocketId;
 
-      // Tie-breaker to decide initiator deterministically:
       const isInitiator = socket.id < peerSocketId;
-
       pcRef.current = createPeerConnection({
         isInitiator,
         onData: (msg) => addLog('peer: ' + msg),
         onStateChange: (s) => addLog('datachannel: ' + s),
-        sendSignal: (data) => {
-          socket.emit('signal', { to: peerSocketId, data });
-        }
+        sendSignal: (data) => socket.emit('signal', { to: peerSocketId, data }),
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
       });
 
-      if (isInitiator) {
-        pcRef.current.createOffer().catch(e => addLog('offer error: ' + e.message));
-      }
+      if (isInitiator) pcRef.current.createOffer().catch(e => addLog('offer error: ' + e.message));
     });
 
-    // global signal listener
     socket.on('signal', async ({ from, data }) => {
-      // only handle signals from the current peer and when a pc exists
       if (!pcRef.current) return;
       if (from !== peerIdRef.current) return;
       await pcRef.current.handleSignal(data);
@@ -53,11 +46,9 @@ export default function App() {
     socket.on('relay_msg', ({ from, text }) => addLog('relay from ' + from + ': ' + text));
     socket.on('peer_left', () => { addLog('peer left'); cleanupSession(); });
     socket.on('kicked', ({ reason }) => { addLog('you were kicked: ' + reason); cleanupSession(); });
+    socket.on('left_queue', () => { addLog('Successfully left queue'); cleanupSession(); setStatus('idle'); });
 
-    return () => {
-      socket.disconnect();
-      cleanupSession();
-    };
+    return () => { socket.disconnect(); cleanupSession(); };
   }, []);
 
   useEffect(() => { peerIdRef.current = peerId; }, [peerId]);
@@ -72,9 +63,8 @@ export default function App() {
   }
 
   function leave() {
-    socketRef.current.emit('leave_queue', { filters: {} });
-    addLog('left queue');
-    setStatus('idle');
+    socketRef.current.emit('leave_queue');
+    addLog('leave_queue sent');
   }
 
   function sendTextPrompt() {
@@ -85,7 +75,6 @@ export default function App() {
         pcRef.current.sendText(text);
         addLog('me: ' + text);
       } else if (peerId) {
-        // fallback relay
         socketRef.current.emit('relay_msg', { to: peerId, text });
         addLog('relay me: ' + text);
       } else addLog('not connected to peer');
@@ -96,25 +85,19 @@ export default function App() {
 
   function next() {
     addLog('Next pressed - requeueing');
-    if (pcRef.current) {
-      try { pcRef.current.pc.close(); } catch(e){}
-    }
-    setPeerId(null);
-    setStatus('idle');
+    cleanupSession();
     socketRef.current.emit('join_queue', { filters: {} });
   }
 
   function report() {
-    const sessionId = null; // MVP: server keeps session mapping; in prod, expose sessionId securely to client
+    const sessionId = null;
     socketRef.current.emit('report', { sessionId, reason: 'user_report' });
     addLog('reported');
   }
 
   function cleanupSession() {
-    if (pcRef.current) {
-      try { pcRef.current.pc.close(); } catch (e) {}
-      pcRef.current = null;
-    }
+    try { pcRef.current?.pc.close(); } catch (e) {}
+    pcRef.current = null;
     setPeerId(null);
     setStatus('idle');
   }
